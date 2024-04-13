@@ -1,0 +1,135 @@
+select * from pizza_runner.customer_orders;
+select * from pizza_runner.pizza_names;
+select * from pizza_runner.pizza_recipes;
+select * from pizza_runner.pizza_toppings;
+select * from pizza_runner.runner_orders;
+select * from pizza_runner.runners;
+
+update pizza_runner.customer_orders
+set 
+  exclusions = case when exclusions = 'null' then null else exclusions end 
+  , extras =  case when extras = 'null' then null else extras end 
+  
+update pizza_runner.runner_orders 
+set 
+  distance = case when distance = 'null' then null else distance end, 
+  duration = case when duration = 'null' then null else duration end, 
+  pickup_time = case when pickup_time = 'null' then null else pickup_time end, 
+  cancellation = case when cancellation = 'null' then null else cancellation end
+  
+update pizza_runner.runner_orders
+set
+distance = case when distance like '%km' then trim('km' from distance) else distance end 
+
+update pizza_runner.runner_orders 
+set 
+  duration = case when duration like '%mins' then trim('mins' from duration) 
+                  when duration like '%minutes' then trim('minutes' from duration) 
+                  when duration like '%minute' then trim('minute' from duration)
+                  else duration
+              end
+
+ALTER table pizza_runner.runner_orders
+alter column pickup_time type timestamp using pickup_time::timestamp
+
+ALTER table pizza_runner.runner_orders
+alter column distance type decimal(4,2) using distance::decimal(4,2), 
+alter column duration type int using duration::int
+
+
+--PART C: Ingredient Optimization 
+
+--What are the standard ingredients for each pizza?
+
+select * from pizza_runner.pizza_toppings;
+select * from pizza_runner.pizza_recipes;
+select * from pizza_runner.pizza_names;
+
+
+select pizza_name, string_agg(topping_name, ',')
+from 
+(select temp.pizza_id, temp.toppings, a.topping_name, temp.pizza_name
+from 
+(select a.pizza_id, regexp_split_to_table(toppings, '[,\s]+')::INTEGER as toppings, b.pizza_name
+from pizza_runner.pizza_recipes a inner join pizza_runner.pizza_names b on a.pizza_id = b.pizza_id) temp
+inner join pizza_runner.pizza_toppings a on a.topping_id = temp.toppings) temp1
+group by pizza_name
+
+
+
+--What was the most commonly added extra?
+--Use dense_rank() in case there are more than one commonly used topping_id
+--I have used order by and limit here since it was known that there would only be one option
+select * from pizza_runner.customer_orders;
+
+with cte as (select order_id, regexp_split_to_table(extras, '[,\s]+')::INTEGER as extras 
+from pizza_runner.customer_orders
+where extras is not null and extras != '')
+
+select topping_name, count(extras) as num_toppings
+from pizza_runner.pizza_toppings a inner join cte on a.topping_id = cte.extras 
+group by topping_name
+order by num_toppings desc
+limit 1;
+
+
+--What was the most common exclusion?
+
+select topping_name, count(exclusion_id) as num_exclusions 
+from 
+(select order_id, regexp_split_to_table(exclusions, '[,\s]+')::INTEGER as exclusion_id 
+from pizza_runner.customer_orders
+where exclusions is not null and exclusions != '') temp 
+inner join pizza_runner.pizza_toppings a on a.topping_id = temp.exclusion_id 
+group by topping_name 
+order by num_exclusions desc
+limit 1;
+
+--Generate an order item for each record in the customers_orders table in the format of one of the following: + Meat Lovers + Meat Lovers - Exclude Beef + Meat Lovers - Extra Bacon + Meat 
+--Lovers - Exclude Cheese, Bacon - Extra Mushroom, Pepper
+
+select * from pizza_runner.customer_orders;
+
+
+with cte as 
+(select order_id, customer_id, pizza_id, order_time, 
+case when extras = '' then null else extras end as extras, 
+case when exclusions = '' then null else exclusions end as exclusions, 
+row_number() over() as original_row_number
+from pizza_runner.customer_orders), 
+
+union_table as (
+select order_id, customer_id, pizza_id, order_time, 
+regexp_split_to_table(extras, '[,\s]+')::INTEGER as extras, 
+regexp_split_to_table(exclusions, '[,\s]+')::INTEGER as exclusions, 
+original_row_number
+from cte
+union 
+select order_id, customer_id, pizza_id, order_time, 
+null as extras, null as exclusions, 
+original_row_number
+from cte 
+where extras is null and exclusions is null)
+
+, cte3 as (select order_id, customer_id, union_table.pizza_id, order_time, 
+original_row_number, pizza_name, 
+string_agg(extras.topping_name, ', ') as extras, 
+string_agg(exclusions.topping_name, ', ') as exclusions 
+from union_table 
+left join pizza_runner.pizza_names names on union_table.pizza_id = names.pizza_id
+left join pizza_runner.pizza_toppings extras on union_table.extras = extras.topping_id
+left join pizza_runner.pizza_toppings exclusions on union_table.exclusions = exclusions.topping_id
+group by order_id, customer_id, union_table.pizza_id, pizza_name, order_time, original_row_number) 
+
+, cte4 as (select order_id, customer_id, pizza_id, original_row_number, pizza_name, order_time,
+case when extras is null then '' else '- Extra ' || extras end as extras, 
+case when exclusions is null then '' else '- Exclude ' || exclusions end as exclusions 
+from cte3)
+
+, cte5 as (select order_id, customer_id, pizza_id, original_row_number, order_time, 
+pizza_name || extras || exclusions as item
+from cte4)
+
+select order_id, customer_id, pizza_id, order_time, item
+from cte5 
+order by original_row_number
