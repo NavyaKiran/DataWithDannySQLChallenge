@@ -1,0 +1,116 @@
+select * from pizza_runner.customer_orders;
+select * from pizza_runner.pizza_names;
+select * from pizza_runner.pizza_recipes;
+select * from pizza_runner.pizza_toppings;
+select * from pizza_runner.runner_orders;
+select * from pizza_runner.runners;
+
+update pizza_runner.customer_orders
+set 
+  exclusions = case when exclusions = 'null' then null else exclusions end 
+  , extras =  case when extras = 'null' then null else extras end 
+  
+update pizza_runner.runner_orders 
+set 
+  distance = case when distance = 'null' then null else distance end, 
+  duration = case when duration = 'null' then null else duration end, 
+  pickup_time = case when pickup_time = 'null' then null else pickup_time end, 
+  cancellation = case when cancellation = 'null' then null else cancellation end
+  
+update pizza_runner.runner_orders
+set
+distance = case when distance like '%km' then trim('km' from distance) else distance end 
+
+update pizza_runner.runner_orders 
+set 
+  duration = case when duration like '%mins' then trim('mins' from duration) 
+                  when duration like '%minutes' then trim('minutes' from duration) 
+                  when duration like '%minute' then trim('minute' from duration)
+                  else duration
+              end
+
+ALTER table pizza_runner.runner_orders
+alter column pickup_time type timestamp using pickup_time::timestamp
+
+ALTER table pizza_runner.runner_orders
+alter column distance type decimal(4,2) using distance::decimal(4,2), 
+alter column duration type int using duration::int
+
+--PART D: Pricing and Ratings 
+
+--If a Meat Lovers pizza costs $12 and Vegetarian costs $10 and there were no charges for changes - how much money has Pizza Runner made so far if there are no delivery fees?
+
+select sum(cost) as revenue 
+from 
+(select pizza_id, customer_id, order_id, case when pizza_id = 1 then 12 else 10 end as cost
+from
+(select pizza_id, customer_id, a.order_id, runner_id 
+from pizza_runner.customer_orders a inner join pizza_runner.runner_orders b on a.order_id = b.order_id
+where b.cancellation is null or b.cancellation = '') temp) temp
+
+--What if there was an additional $1 charge for any pizza extras? + Add cheese is $1 extra
+
+
+with cte as (select pizza_id, customer_id, order_id, case when extras = '' then null else extras end as extras, 
+case when exclusions = '' then null else exclusions end as exclusions, order_time, 
+row_number() over() as original_row_number
+from pizza_runner.customer_orders a
+where order_id in (select order_id from pizza_runner.runner_orders where distance is not null))
+
+select sum(pizza_cost + len_extras) as total_cost
+from (
+select pizza_id, customer_id, case when pizza_id = 1 then 12 else 10 end as pizza_cost, 
+len_extras from 
+(select pizza_id, customer_id, order_id, 
+    COALESCE(
+      CARDINALITY(REGEXP_SPLIT_TO_ARRAY(extras, '[,\s]+')),
+      0
+    ) as len_extras
+  from cte) temp) temp1
+
+--The Pizza Runner team now wants to add an additional ratings system that allows customers to rate their runner, how would you design an additional table for this new dataset - generate a schema for this new table and insert your own data for ratings for each successful customer order between 1 to 5.
+
+select setseed(1);
+
+drop table if exists pizza_runner.runner_ratings;
+create table pizza_runner.runner_ratings
+(order_id INTEGER, rating INTEGER);
+
+INSERT INTO pizza_runner.runner_ratings 
+select order_id, floor(1+5 * RANDOM()) as rating 
+from pizza_runner.runner_orders 
+where distance IS NOT NULL; 
+
+select * from pizza_runner.runner_ratings;
+select * from pizza_runner.customer_orders;
+select * from pizza_runner.runner_orders;
+
+--Using your newly generated table - can you join all of the information together to form a table which has the following information for successful deliveries? + customer_id + order_id + runner_id + rating + order_time + pickup_time + Time between order and pickup + Delivery duration + Average speed + Total number of pizzas
+
+select *, date_part('min', age(pickup_time, order_time))::INTEGER as time_diff, 
+round((distance*60/duration), 1) as avg_speed 
+from 
+(select a.customer_id, a.order_id, b.runner_id, c.rating, a.order_time, b.pickup_time, count(a.pizza_id) as total_pizzas, 
+b.distance, b.duration
+from pizza_runner.customer_orders a join pizza_runner.runner_orders b on a.order_id = b.order_id 
+join pizza_runner.runner_ratings c on b.order_id = c.order_id 
+where b.distance is not null
+group by a.customer_id, a.order_id, b.runner_id, c.rating, a.order_time, b.pickup_time, b.distance, b.duration
+order by order_id) temp
+
+-- If a Meat Lovers pizza was $12 and Vegetarian $10 fixed prices with no cost for extras and each runner is paid $0.30 per kilometre traveled - how much money does Pizza Runner have left over after these deliveries?
+
+select * from pizza_runner.customer_orders;
+select * from pizza_runner.runner_orders;
+
+select sum(cost - distance*0.3) as leftover_revenue
+from 
+(select order_id, customer_id, sum(pizza_cost) as cost, distance 
+from 
+(
+select a.order_id, a.customer_id, a.pizza_id, sum(case when a.pizza_id = 1 then 12 else 10 end) as pizza_cost, 
+b.distance
+from pizza_runner.customer_orders a inner join pizza_runner.runner_orders b on a.order_id = b.order_id 
+where b.distance is not null
+group by a.order_id, a.customer_id, a.pizza_id, b.distance)
+group by order_id, customer_id, distance) temp1
